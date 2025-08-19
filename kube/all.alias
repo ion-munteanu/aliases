@@ -191,36 +191,6 @@ function __k_find_ns() { k get pod -A -o wide | grep "$1" | awk '{print $1; exit
 function kbash() { pod="$1"; ns=$(__k_find_ns "$pod"); k exec -ti -n "$ns" "$pod" -- bash; }
 function ksh()   { pod="$1"; ns=$(__k_find_ns "$pod"); k exec -ti -n "$ns" "$pod" -- sh; }
 
-# Toolbox pod
-function toolbox(){
-  TOOLBOX_POD_NAME='toolbox-ion'
-  TOOLBOX_CONTAINER_NAME='toolbox'
-  TOOLBOX_NAMESPACE='ion'
-  TOOLBOX_IMAGE=${TOOLBOX_IMAGE:-travelping/nettools}
-
-  k get ns "$TOOLBOX_NAMESPACE" >/dev/null 2>&1 || k create ns "$TOOLBOX_NAMESPACE"
-
-  if ! k get pod -n "$TOOLBOX_NAMESPACE" "$TOOLBOX_POD_NAME" >/dev/null 2>&1; then
-    cat <<EOF | k apply -f -
-apiVersion: v1
-kind: Pod
-metadata:
-  name: $TOOLBOX_POD_NAME
-  namespace: $TOOLBOX_NAMESPACE
-spec:
-  containers:
-  - name: $TOOLBOX_CONTAINER_NAME
-    image: $TOOLBOX_IMAGE
-    imagePullPolicy: IfNotPresent
-  restartPolicy: Always
-EOF
-    echo "Waiting for toolbox pod..."
-    k wait --for=condition=Ready pod/"$TOOLBOX_POD_NAME" -n "$TOOLBOX_NAMESPACE" --timeout=90s
-  fi
-  k exec -it "$TOOLBOX_POD_NAME" -n "$TOOLBOX_NAMESPACE" -c "$TOOLBOX_CONTAINER_NAME" -- bash -c tmux
-}
-
 # Images used in cluster
 function container_versions(){ k get pods -A -o jsonpath="{..image}" | tr -s ' ' '\n' | sort | uniq -c; }
 alias images='container_versions'
-

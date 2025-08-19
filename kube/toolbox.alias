@@ -1,0 +1,183 @@
+# ===================== Toolbox v4 =====================
+function toolbox() {
+  OPTIND=1
+
+  # ---- defaults ----
+  local ns="${TOOLBOX_NAMESPACE:-ion}"
+  local img="${TOOLBOX_IMAGE:-nicolaka/netshoot:latest}"
+  local name_raw="${TOOLBOX_POD_NAME:-toolbox-${USER:-user}}"
+  local cname="${TOOLBOX_CONTAINER_NAME:-toolbox}"
+  local ephemeral=0 recreate=0 delete_only=0 show_help=0
+
+  # ---- help message ----
+  local help_msg="Usage: toolbox [options]
+
+Options:
+  -e            Ephemeral mode (one-off Pod, auto-deletes on exit)
+  -n <ns>       Namespace (default: $ns)
+  -i <image>    Container image (default: $img)
+  -N <name>     Pod/Deployment name (default: $name_raw)
+  -c <cname>    Container name (default: $cname)
+  -r            Recreate (delete + create fresh)
+  -D            Delete only (remove this toolbox and exit)
+  -h            Show this help message
+
+Environment overrides:
+  TOOLBOX_IMAGE, TOOLBOX_NAMESPACE, TOOLBOX_POD_NAME, TOOLBOX_CONTAINER_NAME
+
+Examples:
+  toolbox                # persistent Deployment, exec into it
+  toolbox -e             # ephemeral Pod, cleans up on exit
+  toolbox -i alpine      # custom image
+  toolbox -n debug -N dbgtool -c tbox -e
+  toolbox -D             # delete current toolbox only
+  toolbox-cleanup        # delete all toolbox resources across namespaces
+"
+
+  # ---- parse flags ----
+  while getopts ":n:i:N:c:erDh" opt; do
+    case "$opt" in
+      n) ns="$OPTARG" ;;
+      i) img="$OPTARG" ;;
+      N) name_raw="$OPTARG" ;;
+      c) cname="$OPTARG" ;;
+      e) ephemeral=1 ;;
+      r) recreate=1 ;;
+      D) delete_only=1 ;;
+      h) show_help=1 ;;
+      \?) echo "toolbox: invalid option -$OPTARG" >&2; return 2 ;;
+      :)  echo "toolbox: option -$OPTARG requires an argument" >&2; return 2 ;;
+    esac
+  done
+  shift $((OPTIND-1))
+
+  if (( show_help )); then
+    echo "$help_msg"
+    return 0
+  fi
+
+  # ---- sanitize names ----
+  local name
+  name="$(printf "%s" "$name_raw" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-')"
+  name="${name%-}"; name="${name#-}"
+  [[ -z "$name" ]] && name="toolbox"
+
+  cname="$(printf "%s" "$cname" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-')"
+  cname="${cname%-}"; cname="${cname#-}"
+  [[ -z "$cname" ]] && cname="toolbox"
+
+  # ---- helpers ----
+  __tb_wait_ready() {
+    local ns_="$1" pod_="$2" timeout="${3:-90s}"
+    kubectl wait --for=condition=Ready "pod/$pod_" -n "$ns_" --timeout="$timeout" >/dev/null 2>&1
+  }
+  __tb_exec_fallback() {
+    local ns_="$1" pod_="$2" cname_="$3"
+    kubectl exec -it "$pod_" -n "$ns_" -c "$cname_" -- tmux 2>/dev/null \
+      || kubectl exec -it "$pod_" -n "$ns_" -c "$cname_" -- bash 2>/dev/null \
+      || kubectl exec -it "$pod_" -n "$ns_" -c "$cname_" -- sh
+  }
+
+  # ---- ensure namespace ----
+  kubectl get ns "$ns" >/dev/null 2>&1 || kubectl create ns "$ns" >/dev/null || {
+    echo "Failed to ensure namespace $ns"; return 1; }
+
+  # ---- delete only ----
+  if (( delete_only )); then
+    kubectl delete deploy "$name" -n "$ns" --ignore-not-found >/dev/null
+    kubectl delete pod "$name" -n "$ns" --ignore-not-found >/dev/null
+    kubectl delete pod -n "$ns" -l "app=$name" --ignore-not-found >/dev/null
+    echo "Deleted toolbox resources: ns/$ns name:$name"
+    return 0
+  fi
+
+  # ---- recreate ----
+  if (( recreate )); then
+    kubectl delete deploy "$name" -n "$ns" --ignore-not-found >/dev/null
+    kubectl delete pod "$name" -n "$ns" --ignore-not-found >/dev/null
+    kubectl delete pod -n "$ns" -l "app=$name" --ignore-not-found >/dev/null
+  fi
+
+  if (( ephemeral )); then
+    # -------- Ephemeral Pod --------
+    cat <<EOF | kubectl apply -f - >/dev/null
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+  namespace: $ns
+  labels:
+    app: $name
+    role: toolbox
+spec:
+  terminationGracePeriodSeconds: 0
+  restartPolicy: Never
+  containers:
+  - name: $cname
+    image: $img
+    imagePullPolicy: IfNotPresent
+    stdin: true
+    tty: true
+    command: ["/bin/sh","-c","trap : TERM INT; sleep infinity & wait"]
+EOF
+
+    __tb_wait_ready "$ns" "$name" "90s" || echo "Pod not ready yet; attempting exec."
+
+    # run shell; when user exits, cleanup happens right after
+    __tb_exec_fallback "$ns" "$name" "$cname"
+    local rc=$?
+
+    echo "🧹 Cleaning up ephemeral toolbox pod..."
+    kubectl delete pod "$name" -n "$ns" --ignore-not-found >/dev/null
+
+    return $rc
+  else
+    # -------- Persistent Deployment --------
+    cat <<EOF | kubectl apply -f - >/dev/null
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: $name
+  namespace: $ns
+  labels:
+    app: $name
+    role: toolbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: $name
+  template:
+    metadata:
+      labels:
+        app: $name
+        role: toolbox
+    spec:
+      containers:
+      - name: $cname
+        image: $img
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh","-lc","trap : TERM INT; while true; do sleep 3600; done"]
+        stdin: true
+        tty: true
+      restartPolicy: Always
+EOF
+
+    kubectl rollout status deploy/"$name" -n "$ns" --timeout=90s >/dev/null 2>&1 || true
+    local pod
+    pod="$(kubectl get pod -n "$ns" -l app="$name" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
+    [[ -z "$pod" ]] && { echo "No toolbox pod found in ns/$ns"; return 1; }
+    __tb_wait_ready "$ns" "$pod" "90s" || echo "Pod not ready yet; attempting exec."
+    __tb_exec_fallback "$ns" "$pod" "$cname"
+  fi
+}
+
+# ===================== Global cleanup =====================
+function toolbox-cleanup() {
+  echo "Cleaning all toolbox resources (role=toolbox) across namespaces..."
+  kubectl delete deploy -A -l role=toolbox --ignore-not-found
+  kubectl delete pod    -A -l role=toolbox --ignore-not-found
+  echo "Done."
+}
+alias tboxclean='toolbox-cleanup'
+
