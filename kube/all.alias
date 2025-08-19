@@ -1,0 +1,226 @@
+# ===================== Core =====================
+alias k='kubectl'
+alias ku='k'
+alias kub='k'
+alias kube='k'
+
+alias kx='kubectx'
+alias ctx='k config get-contexts'
+alias kc='k config current-context'
+alias x='kc'
+alias kcp='kubectl cp'
+
+# Current namespace (set)
+__K_NS_SET='k config set-context --current --namespace'
+alias nsset="$__K_NS_SET"
+alias namespace="$__K_NS_SET"
+function n(){ $__K_NS_SET "$1"; }
+
+
+# ===================== Helpers =====================
+__k_get_nohdr(){ k get "$@" --no-headers; }
+__k_watch(){ "$@" -w; }
+
+# Pods
+__k_pods(){ __k_get_nohdr pods "$@"; }
+alias pods='__k_pods'
+alias po='__k_pods'
+alias p='__k_pods'
+alias podsw='__k_watch __k_pods'
+alias pw='__k_watch __k_pods'
+
+# Deployments
+__k_deployments(){ __k_get_nohdr deployments "$@"; }
+alias deployments='__k_deployments'
+alias deployment='__k_deployments'
+alias depl='__k_deployments'
+alias dep='__k_deployments'
+
+# DaemonSets
+__k_daemonsets(){ __k_get_nohdr daemonsets "$@"; }
+alias daemonsets='__k_daemonsets'
+alias daemon='__k_daemonsets'
+alias ds='__k_daemonsets'
+
+# Services
+__k_services(){ __k_get_nohdr services "$@"; }
+alias services='__k_services'
+alias svc='__k_services'
+
+# ConfigMaps
+__k_configmaps(){ __k_get_nohdr cm "$@"; }
+alias configmaps='__k_configmaps'
+alias configs='__k_configmaps'
+alias cm='__k_configmaps'
+
+# Jobs
+__k_jobs(){ __k_get_nohdr jobs "$@"; }
+alias jobs='__k_jobs'
+alias job='__k_jobs'
+alias j='__k_jobs'
+alias jo='__k_jobs'
+
+# Secrets
+__k_secrets(){ __k_get_nohdr secrets "$@"; }
+alias secrets='__k_secrets'
+alias secret='__k_secrets'
+alias sec='__k_secrets'
+
+# Endpoints
+__k_endpoints(){ __k_get_nohdr endpoints "$@"; }
+alias endpoints='__k_endpoints'
+alias ep='__k_endpoints'
+
+# HPA
+__k_hpa(){ __k_get_nohdr hpa "$@"; }
+alias hpa='__k_hpa'
+
+# Istio / Gateway API
+__k_vs(){ __k_get_nohdr vs "$@"; }
+alias virtualservices='__k_vs'
+alias vs='__k_vs'
+
+__k_gw(){ __k_get_nohdr gateway "$@"; }
+alias gateways='__k_gw'
+alias gateway='__k_gw'
+alias gate='__k_gw'
+alias gw='__k_gw'
+
+# Ingresses
+__k_ingr(){ __k_get_nohdr ingresses "$@"; }
+alias ingresses='__k_ingr'
+alias ingress='__k_ingr'
+alias ingr='__k_ingr'
+alias ingres='__k_ingr'
+alias ingre='__k_ingr'
+
+# Cluster roles / bindings
+__k_cr(){ __k_get_nohdr clusterrole "$@"; }
+alias clusterrole='__k_cr'
+alias cr='__k_cr'
+
+__k_crb(){ __k_get_nohdr clusterrolebinding "$@"; }
+alias clusterrolebinding='__k_crb'
+alias crb='__k_crb'
+
+# Service accounts
+__k_sa(){ __k_get_nohdr sa "$@"; }
+alias serviceaccount='__k_sa'
+alias sa='__k_sa'
+
+# Pod disruption budgets
+__k_pdb(){ __k_get_nohdr poddisruptionbudget "$@"; }
+alias poddisruptionbudget='__k_pdb'
+alias pdb='__k_pdb'
+
+# Namespaces
+__k_namespaces(){ __k_get_nohdr namespaces "$@"; }
+alias namespaces='__k_namespaces'
+alias ns='__k_namespaces'
+
+
+# ===================== Common Verbs =====================
+alias get='k get'
+alias delete='k delete'
+alias del='k delete'
+alias delf='k delete --grace-period=0 --force'
+alias dj='del job'
+alias dp='del pod'
+
+alias logs='k logs'
+alias lo='k logs -f'
+alias edit='k edit'
+alias ed='k edit deployment'
+alias describe='k describe'
+alias de='k describe'
+alias des='k describe'
+
+alias rollout='k rollout'
+alias restart='k rollout restart deployment'
+alias scale='k scale'
+
+alias cordon='k cordon'
+alias uncordon='k uncordon'
+alias taint='k taint'
+alias drain='k drain'
+
+alias events='k get events'
+alias ev='k get events'
+alias clusterinfo='k cluster-info'
+alias all='k get all --all-namespaces'
+
+
+# ===================== Useful Functions =====================
+# Delete stuck pods
+function remove_terminating() {
+  echo "Deleting Terminating pods..."
+  k get pods | awk '/Terminating/ {print $1}' | xargs -r k delete pod --force --grace-period=0
+}
+function remove_error() {
+  echo "Deleting Error pods..."
+  k get pods | awk '/Error/ {print $1}' | xargs -r k delete pod --force --grace-period=0
+}
+
+# Node allocation summary
+function kstat() {
+  for node in $(k get nodes --no-headers -o custom-columns=NAME:.metadata.name); do
+    echo -e "\n$node"
+    k describe node "$node" | grep -A 4 "Allocated resources"
+  done
+}
+
+# Grep pods across namespaces (compact view)
+function pod() {
+  k get pod -A -o wide | awk 'NR>1{print $2,$3,$4,$5,$6,$1}' | column -t | grep -E "${*:-.}"
+}
+
+# Crashy pods quick-find
+function crashes() { pod 'Crash|Error|ImagePullBackOff|OOMKilled'; }
+alias crash='crashes'
+alias cras='crashes'
+alias cra='crashes'
+alias crashe='crashes'
+
+# Health probe helper
+function kcph() {
+  k exec -ti "$@" -- sh -c 'apk -q update && apk add -q curl jq && curl -s localhost:8080/__health | jq'
+}
+
+# Exec into pod by partial name (auto-detect ns)
+function __k_find_ns() { k get pod -A -o wide | grep "$1" | awk '{print $1; exit}'; }
+function kbash() { pod="$1"; ns=$(__k_find_ns "$pod"); k exec -ti -n "$ns" "$pod" -- bash; }
+function ksh()   { pod="$1"; ns=$(__k_find_ns "$pod"); k exec -ti -n "$ns" "$pod" -- sh; }
+
+# Toolbox pod
+function toolbox(){
+  TOOLBOX_POD_NAME='toolbox-ion'
+  TOOLBOX_CONTAINER_NAME='toolbox'
+  TOOLBOX_NAMESPACE='ion'
+  TOOLBOX_IMAGE=${TOOLBOX_IMAGE:-travelping/nettools}
+
+  k get ns "$TOOLBOX_NAMESPACE" >/dev/null 2>&1 || k create ns "$TOOLBOX_NAMESPACE"
+
+  if ! k get pod -n "$TOOLBOX_NAMESPACE" "$TOOLBOX_POD_NAME" >/dev/null 2>&1; then
+    cat <<EOF | k apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $TOOLBOX_POD_NAME
+  namespace: $TOOLBOX_NAMESPACE
+spec:
+  containers:
+  - name: $TOOLBOX_CONTAINER_NAME
+    image: $TOOLBOX_IMAGE
+    imagePullPolicy: IfNotPresent
+  restartPolicy: Always
+EOF
+    echo "Waiting for toolbox pod..."
+    k wait --for=condition=Ready pod/"$TOOLBOX_POD_NAME" -n "$TOOLBOX_NAMESPACE" --timeout=90s
+  fi
+  k exec -it "$TOOLBOX_POD_NAME" -n "$TOOLBOX_NAMESPACE" -c "$TOOLBOX_CONTAINER_NAME" -- bash -c tmux
+}
+
+# Images used in cluster
+function container_versions(){ k get pods -A -o jsonpath="{..image}" | tr -s ' ' '\n' | sort | uniq -c; }
+alias images='container_versions'
+
